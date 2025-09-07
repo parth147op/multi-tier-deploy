@@ -1,0 +1,47 @@
+# === General ===
+.DS_Store
+*.log
+*.tmp
+*.bak
+*.swp
+
+# === Python (if Flask app) ===
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+env/
+venv/
+
+# === Node.js (if Node app) ===
+node_modules/
+npm-debug.log
+yarn-error.log
+dist/
+
+# === Terraform ===
+*.tfstate
+*.tfstate.*
+.terraform/
+crash.log
+override.tf
+override.tf.json
+terraform.tfvars
+terraform.tfvars.json
+
+# === Ansible ===
+*.retry
+.cache/
+*.vault-pass
+
+# === Vagrant ===
+.vagrant/
+
+# === IDE/Editor ===
+.vscode/
+.idea/
+*.iml
+
+# === OS Files ===
+Thumbs.db
