@@ -1,0 +1,185 @@
+---
+- name: Auto-Heal | DB, App, LB
+  hosts: all
+  become: yes
+  gather_facts: no
+
+  vars:
+    app_ip: "192.168.56.10"
+    db_ip:  "192.168.56.11"
+    lb_ip:  "192.168.56.12"
+
+  tasks:
+    - name: 🧠 Connectivity check
+      ping:
+
+    # ===== DB HEAL =====
+    - name: 💾 Check MySQL service (db)
+      when: inventory_hostname == db_ip
+      block:
+        - service_facts:
+        - name: Assert MySQL is running
+          assert:
+            that:
+              - "'mysql' in ansible_facts.services"
+              - "ansible_facts.services['mysql'].state == 'running'"
+          success_msg: "MySQL is running on DB node."
+          fail_msg: "MySQL not running. Will attempt auto-heal..."
+      rescue:
+        - name: Start MySQL
+          service:
+            name: mysql
+            state: started
+            enabled: yes
+        - name: Re-check MySQL port
+          wait_for:
+            host: "{{ db_ip }}"
+            port: 3306
+            timeout: 20
+        - name: Final assert MySQL
+          service_facts:
+        - assert:
+            that:
+              - "'mysql' in ansible_facts.services"
+              - "ansible_facts.services['mysql'].state == 'running'"
+            success_msg: "Auto-heal OK: MySQL is now running."
+            fail_msg: "Auto-heal FAILED: MySQL still not running."
+
+    # ===== APP HEAL =====
+    - name: ⚙️ Check myapp service (app)
+      when: inventory_hostname == app_ip
+      block:
+        - shell: systemctl is-active myapp
+          register: app_status
+          changed_when: false
+        - assert:
+            that:
+              - app_status.stdout == "active"
+            success_msg: "myapp service is running."
+            fail_msg: "myapp not running. Will attempt auto-heal..."
+      rescue:
+        - name: Ensure Flask + connector are installed (idempotent)
+          apt:
+            name:
+              - python3
+              - python3-pip
+              - python3-venv
+            state: present
+            update_cache: yes
+        - name: Ensure deps via pip
+          pip:
+            name:
+              - flask
+              - mysql-connector-python
+            executable: pip3
+        - name: Restart myapp
+          systemd:
+            name: myapp
+            state: restarted
+            enabled: yes
+        - name: Wait for app port
+          wait_for:
+            host: "{{ app_ip }}"
+            port: 5000
+            timeout: 20
+        - name: Final assert myapp
+          shell: systemctl is-active myapp
+          register: app_status_after
+          changed_when: false
+        - assert:
+            that:
+              - app_status_after.stdout == "active"
+            success_msg: "Auto-heal OK: myapp is now running."
+            fail_msg: "Auto-heal FAILED: myapp still not running."
+
+    - name: 🌐 Verify Flask endpoint (app)
+      when: inventory_hostname == app_ip
+      block:
+        - uri:
+            url: "http://{{ app_ip }}:5000"
+            return_content: yes
+            status_code: 200
+          register: app_http
+        - assert:
+            that:
+              - "'Hello from App VM!' in app_http.content"
+            success_msg: "Flask endpoint OK."
+            fail_msg: "Flask endpoint error. Will attempt auto-heal..."
+      rescue:
+        - name: Restart myapp again (if just boot lag)
+          systemd:
+            name: myapp
+            state: restarted
+            enabled: yes
+        - wait_for:
+            host: "{{ app_ip }}"
+            port: 5000
+            timeout: 20
+        - uri:
+            url: "http://{{ app_ip }}:5000"
+            return_content: yes
+            status_code: 200
+          register: app_http2
+        - assert:
+            that:
+              - "'Hello from App VM!' in app_http2.content"
+            success_msg: "Auto-heal OK: Flask endpoint working now."
+            fail_msg: "Auto-heal FAILED: Flask still not responding."
+
+    # ===== LB HEAL =====
+    - name: 🌍 Check LB proxy (lb)
+      when: inventory_hostname == lb_ip
+      block:
+        - apt:
+            name: nginx
+            state: present
+            update_cache: yes
+        - uri:
+            url: "http://{{ lb_ip }}"
+            status_code: 200
+            return_content: yes
+          register: lb_http
+        - assert:
+            that:
+              - "'Hello from App VM!' in lb_http.content"
+            success_msg: "Nginx reverse proxy OK."
+            fail_msg: "LB not proxying. Will attempt auto-heal..."
+      rescue:
+        - name: Ensure site file exists
+          copy:
+            dest: /etc/nginx/sites-available/myapp
+            mode: "0644"
+            content: |
+              server {
+                listen 80;
+                location / {
+                  proxy_pass http://{{ app_ip }}:5000;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                }
+              }
+        - name: Enable site link
+          file:
+            src: /etc/nginx/sites-available/myapp
+            dest: /etc/nginx/sites-enabled/myapp
+            state: link
+            force: yes
+        - name: Disable default site if present
+          file:
+            path: /etc/nginx/sites-enabled/default
+            state: absent
+        - name: Restart Nginx
+          service:
+            name: nginx
+            state: restarted
+            enabled: yes
+        - uri:
+            url: "http://{{ lb_ip }}"
+            status_code: 200
+            return_content: yes
+          register: lb_http2
+        - assert:
+            that:
+              - "'Hello from App VM!' in lb_http2.content"
+            success_msg: "Auto-heal OK: Nginx proxy working now."
+            fail_msg: "Auto-heal FAILED: Nginx proxy still failing."

@@ -1,0 +1,75 @@
+---
+- name: Health Check | DB, App, and LB Stack
+  hosts: all
+  become: yes
+  gather_facts: no
+
+  vars:
+    app_ip: "192.168.56.10"
+    db_ip: "192.168.56.11"
+    lb_ip: "192.168.56.12"
+
+  tasks:
+
+    - name: 🧠 Check basic connectivity (ping)
+      ping:
+
+    - name: 💾 Check MySQL service
+      when: inventory_hostname == db_ip
+      service_facts:
+      register: db_services
+
+    - name: ✅ Ensure MySQL is running
+      when: inventory_hostname == db_ip
+      assert:
+        that:
+          - "'mysql' in db_services.ansible_facts.services"
+          - "db_services.ansible_facts.services['mysql'].state == 'running'"
+        success_msg: "MySQL is running on DB node."
+        fail_msg: "MySQL is NOT running on DB node!"
+
+    - name: ⚙️ Check myapp service
+      when: inventory_hostname == app_ip
+      shell: systemctl is-active myapp
+      register: app_status
+      changed_when: false
+
+    - name: ✅ Verify myapp service active
+      when: inventory_hostname == app_ip
+      assert:
+        that:
+          - app_status.stdout == "active"
+        success_msg: "myapp Flask service is running."
+        fail_msg: "myapp Flask service is NOT running."
+
+    - name: 🌐 Check Flask endpoint directly (App)
+      when: inventory_hostname == app_ip
+      uri:
+        url: "http://{{ app_ip }}:5000"
+        return_content: yes
+        status_code: 200
+      register: app_http
+
+    - name: ✅ Verify Flask returned valid response
+      when: inventory_hostname == app_ip
+      assert:
+        that:
+          - "'Hello from App VM!' in app_http.content"
+        success_msg: "Flask app responded correctly."
+        fail_msg: "Flask app did not respond properly!"
+
+    - name: 🌍 Check reverse proxy through LB
+      when: inventory_hostname == lb_ip
+      uri:
+        url: "http://{{ lb_ip }}"
+        return_content: yes
+        status_code: 200
+      register: lb_http
+
+    - name: ✅ Verify Nginx reverse proxy works
+      when: inventory_hostname == lb_ip
+      assert:
+        that:
+          - "'Hello from App VM!' in lb_http.content"
+        success_msg: "Nginx LB proxy is working!"
+        fail_msg: "Nginx reverse proxy failed!"
