@@ -46,6 +46,15 @@
         state: present
         login_unix_socket: "{{ mysql_socket }}"
 
+    - name: Create read-only ops user for LB
+      community.mysql.mysql_user:
+        name: "{{ ops_user | default('opsro') }}"
+        host: "{{ lb_ip | default('192.168.56.12') }}"
+        password: "{{ ops_password | default('opsroPASS!') }}"
+        priv: "{{ (db_name | default('myappdb')) }}.*:SELECT"
+        state: present
+        login_unix_socket: "{{ mysql_socket | default('/var/run/mysqld/mysqld.sock') }}"
+        
   handlers:
     - name: Restart MySQL
       service:
@@ -203,3 +212,78 @@
         name: nginx
         state: restarted
         enabled: yes
+
+- name: Apply UFW + SSH hardening
+  hosts: all
+  become: yes
+  vars:
+    allow_ssh_from: "192.168.56.0/24"
+  tasks:
+    - name: Install UFW
+      apt:
+        name: ufw
+        state: present
+        update_cache: yes
+
+    - name: Allow SSH from management subnet
+      ufw:
+        rule: allow
+        proto: tcp
+        port: 22
+        from_ip: "{{ item }}"
+      loop:
+        - "192.168.56.0/24"   # Host-only network
+        - "10.0.2.2"          # Vagrant NAT gateway (vagrant ssh)
+    - name: Allow MySQL only on DB (from app + lb)
+      ufw:
+        rule: allow
+        proto: tcp
+        port: 3306
+        from_ip: "{{ item }}"
+      loop:
+        - "192.168.56.10"
+        - "192.168.56.12"
+      when: "'db' in group_names"
+
+    - name: Allow Flask port only from LB
+      ufw:
+        rule: allow
+        proto: tcp
+        port: 5000
+        from_ip: "192.168.56.12"
+      when: "'app' in group_names"
+
+    - name: Allow HTTP on LB (for host access)
+      ufw:
+        rule: allow
+        proto: tcp
+        port: 80
+      when: "'lb' in group_names"
+
+    - name: Deny all other incoming by default
+      ufw:
+        state: enabled
+        policy: deny
+        direction: incoming
+
+    - name: Ensure password authentication disabled in SSH
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PasswordAuthentication'
+        line: 'PasswordAuthentication no'
+        state: present
+      notify: Restart SSH
+
+    - name: Disable root SSH login
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PermitRootLogin'
+        line: 'PermitRootLogin no'
+        state: present
+      notify: Restart SSH
+
+  handlers:
+    - name: Restart SSH
+      service:
+        name: ssh
+        state: restarted
