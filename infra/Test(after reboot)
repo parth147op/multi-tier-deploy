@@ -1,0 +1,6 @@
+vagrant up
+vagrant ssh lb
+ansible -i ~/inventory.ini all -m ping
+curl http://192.168.56.10:5000
+curl http://192.168.56.12
+ssh vagrant@192.168.56.10 "MYSQL_PWD=myapppass mysql -h 192.168.56.11 -u myappuser -e 'SELECT 1;'"
